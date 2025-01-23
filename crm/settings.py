@@ -297,7 +297,9 @@ SWAGGER_SETTINGS = {
 CORS_ALLOW_HEADERS = default_headers + ("org",)
 CORS_ORIGIN_ALLOW_ALL = True
 CSRF_TRUSTED_ORIGINS = ["https://*.runcode.io", "http://*"]
-
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",  # React development server
+]
 SECURE_HSTS_SECONDS = 3600
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
