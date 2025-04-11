@@ -64,6 +64,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     #     self.key_expires = timezone.now() + datetime.timedelta(hours=2)
     #     super().save(*args, **kwargs)
 
+class UserGoogleLoginSetting(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="google_login_setting")
+    google_login_enabled = models.BooleanField(default=False)
+    
+    def __str__(self):
+        return f"{self.user.email} - Google Login: {'Enabled' if self.google_login_enabled else 'Disabled'}"
+
+
 class Address(BaseModel):
     address_line = models.CharField(
         _("Address"), max_length=255, blank=True, default=""
