@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "django_ses",
     "drf_spectacular",
+    "drf_yasg",
     "common",
     "accounts",
     "cases",
@@ -91,6 +92,7 @@ MIDDLEWARE = [
     # "common.external_auth.CustomDualAuthentication"
     "common.middleware.get_company.GetProfileAndOrg",
     "wagtail.contrib.redirects.middleware.RedirectMiddleware",
+
 ]
 
 ROOT_URLCONF = "crm.urls"

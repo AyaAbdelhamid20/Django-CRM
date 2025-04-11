@@ -16,8 +16,50 @@ from common.models import (
     Org,
     Profile,
     User,
+    UserGoogleLoginSetting,
 )
 
+# NEW CHANGES: added imports
+from django.utils import timezone
+from common.utils import ROLES
+
+# NEW CHANGES: Signup Serializer
+class SignupSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=6)
+
+    class Meta:
+        model = User
+        fields = ['email', 'password']
+
+    def create(self, validated_data):
+        # Use create_user to properly hash password
+        user = User.objects.create_user(
+            email=validated_data['email'],
+            password=validated_data['password']
+        )
+        return user
+
+# NEW CHANGES: Login Serializer
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = authenticate(email=data['email'], password=data['password'])
+        if not user:
+            raise serializers.ValidationError("Invalid email or password")
+        if not user.is_active:
+            raise serializers.ValidationError("User account is disabled")
+        return {'user': user}
+
+# NEW CHANGES: Forgot Password Serializer
+class ForgotPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        if not User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("User with this email does not exist")
+        return value
 
 class OrganizationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -28,6 +70,12 @@ class OrganizationSerializer(serializers.ModelSerializer):
 class SocialLoginSerializer(serializers.Serializer):
     token = serializers.CharField()
 
+# NEW CHANGES: user invite serializer
+class UserInviteSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(ROLES, default="USER")
+    has_sales_access = serializers.BooleanField(default=False)
+    has_marketing_access = serializers.BooleanField(default=False)
 
 class CommentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -376,4 +424,7 @@ class UserUpdateStatusSwaggerSerializer(serializers.Serializer):
 
     status = serializers.ChoiceField(choices = STATUS_CHOICES,required=True)
 
-
+# Serializer for User Google Login setting 
+class UserGoogleLoginSettingSerializer(serializers.Serializer):
+    user_id = serializers.UUIDField()
+    google_login_enabled = serializers.BooleanField()

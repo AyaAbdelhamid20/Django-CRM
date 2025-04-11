@@ -24,14 +24,15 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
+# new  import for user google login setting
+from drf_yasg import openapi
 #from common.external_auth import CustomDualAuthentication
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.pagination import LimitOffsetPagination
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
 from accounts.models import Account, Contact, Tags
 from accounts.serializer import AccountSerializer
 from cases.models import Case
@@ -39,7 +40,7 @@ from cases.serializer import CaseSerializer
 
 ##from common.custom_auth import JSONWebTokenAuthentication
 from common import serializer, swagger_params1
-from common.models import APISettings, Document, Org, Profile, User
+from common.models import APISettings, Document, Org, Profile, User as CommonUser, UserGoogleLoginSetting
 from common.serializer import *
 # from common.serializer import (
 #     CreateUserSerializer,
@@ -63,7 +64,154 @@ from opportunity.models import Opportunity
 from opportunity.serializer import OpportunitySerializer
 from teams.models import Teams
 from teams.serializer import TeamsSerializer
+# NEW CHANGES: added imports
+from django.contrib.auth.models import User
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny#, IsAuthenticated
+from django.core.mail import send_mail
+from django.apps import apps
+from django.contrib.auth.tokens import default_token_generator
+import secrets
 
+# NEW CHANGE:
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+}
+
+# NEW CHANGE: Helper function to generate JWT tokens
+def generate_tokens(user):
+    refresh = RefreshToken.for_user(user)
+    return {'refresh': str(refresh), 'access': str(refresh.access_token)}
+
+# NEW: Signup API
+class SignupView(APIView):
+    permission_classes = [AllowAny]
+    
+    @extend_schema(
+        tags=["auth"],
+        description="Register a new user",
+        request=SignupSerializer,
+        responses={201: SignupSerializer},
+        examples=[
+            OpenApiExample(
+                'Signup Example',
+                value={
+                    'email': 'user@example.com',
+                    'password': 'securepassword'
+                },
+                request_only=True,
+            )
+        ]
+    )
+    def post(self, request):
+        serializer = SignupSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            tokens = generate_tokens(user)
+            return Response({'token': tokens['access'], 'refresh': tokens['refresh'], 'message': 'User registered successfully'}, status=201)
+        return Response(serializer.errors, status=400)
+
+# NEW CHANGE: Login API
+class EmailLoginView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        tags=["auth"],
+        description="Login with email and password",
+        request=LoginSerializer,
+        responses={200: LoginSerializer}
+    )
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.validated_data['user']
+            tokens = generate_tokens(user)
+            return Response({'token': tokens['access'], 'refresh': tokens['refresh']})
+        return Response(serializer.errors, status=400)
+
+#NEW CHANGE: google login moved here
+class GoogleLoginView(APIView):
+    """
+    Check for authentication with google
+    post:
+        Returns token of logged In user
+    """
+    @extend_schema(
+        tags=["auth"],
+        description="Login through Google",
+        request=SocialLoginSerializer,
+        responses={200: SocialLoginSerializer}
+    )
+    def post(self, request):
+        payload = {'access_token': request.data.get("token")}  # validate the token
+        r = requests.get('https://www.googleapis.com/oauth2/v2/userinfo', params=payload)
+        data = json.loads(r.text)
+        print(data)
+        if 'error' in data:
+            content = {'message': 'wrong google token / this google token is already expired.'}
+            return Response(content)
+        # create user if not exist
+        try:
+            user = CommonUser.objects.get(email=data['email'])
+        except CommonUser.DoesNotExist:
+            user = CommonUser()
+            user.email = data['email']
+            user.profile_pic = data['picture']
+            # provider random default password
+            user.password = make_password(BaseUserManager().make_random_password())
+            user.email = data['email']
+            user.save()
+        token = RefreshToken.for_user(user)  # generate token without username & password
+        response = {}
+        response['username'] = user.email
+        response['access_token'] = str(token.access_token)
+        response['refresh_token'] = str(token)
+        response['user_id'] = user.id
+        return Response(response)
+
+# NEW Change: Forgot Password API
+class ForgotPasswordView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        tags=["auth"],
+        description="Forgot Password",
+        request=ForgotPasswordSerializer,
+        responses={200: ForgotPasswordSerializer}
+    )
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        if serializer.is_valid():
+            email = serializer.validated_data['email']
+            try:
+                user = User.objects.get(email=email)
+                # Generate password reset token
+                token = default_token_generator.make_token(user)
+                # In a real application, you would create a reset link with this token
+                reset_link = f"your-frontend-url/reset-password?token={token}"
+                
+                try:
+                    send_mail(
+                        'Password Reset Request',
+                        f'Click the link to reset your password: {reset_link}',
+                        settings.DEFAULT_FROM_EMAIL,
+                        [email],
+                        fail_silently=False,
+                    )
+                    return Response({'message': 'Password reset email sent'}, status=200)
+                except Exception as e:
+                    return Response(
+                        {'error': 'Failed to send reset email'}, 
+                        status=500
+                    )
+            except User.DoesNotExist:
+                return Response(
+                    {'error': 'User not found'}, 
+                    status=404
+                )
+        return Response(serializer.errors, status=400)
 
 class GetTeamsAndUsersView(APIView):
 
@@ -368,6 +516,7 @@ class ApiHomeView(APIView):
         return Response(context, status=status.HTTP_200_OK)
 
 
+# NEW CHANGE: changed some parts
 class OrgProfileCreateView(APIView):
     #authentication_classes = (CustomDualAuthentication,)
     permission_classes = (IsAuthenticated,)
@@ -388,12 +537,28 @@ class OrgProfileCreateView(APIView):
         if serializer.is_valid():
             org_obj = serializer.save()
 
-            # now creating the profile
-            profile_obj = self.model2.objects.create(user=request.user, org=org_obj)
-            # now the current user is the admin of the newly created organisation
-            profile_obj.is_organization_admin = True
-            profile_obj.role = 'ADMIN'
-            profile_obj.save()
+            # Check if profile for this user and org already exists
+            existing_profile = Profile.objects.filter(
+                user=request.user,
+                org=org_obj
+            ).first()
+
+            if existing_profile:
+                return Response(
+                    {
+                        "error": True,
+                        "message": "You already have a profile in this organization",
+                        "status": status.HTTP_400_BAD_REQUEST,
+                    }
+                )
+
+            # Create new profile for this organization
+            profile_obj = self.model2.objects.create(
+                user=request.user,
+                org=org_obj,
+                is_organization_admin=True,
+                role='ADMIN'
+            )
 
             return Response(
                 {
@@ -724,6 +889,7 @@ class UserStatusView(APIView):
     permission_classes = (IsAuthenticated,)
 
     @extend_schema(
+            tags=['users'], # NEW CHANGE: used the correct tag to group it with other users endpoints
         description="User Status View",parameters=swagger_params1.organization_params, request=UserUpdateStatusSwaggerSerializer
     )
     def post(self, request, pk, format=None):
@@ -871,41 +1037,75 @@ class DomainDetailView(APIView):
             {"error": False, "message": "API setting deleted sucessfully"},
             status=status.HTTP_200_OK,
         )
+ 
+# views for User Google Login Setting
+class UserGoogleLoginToggleView(APIView):
+    permission_classes = [IsAuthenticated]
 
-class GoogleLoginView(APIView):
-    """
-    Check for authentication with google
-    post:
-        Returns token of logged In user
-    """
+    def get(self, request):
+        """Return Google login settings for all users in the same organization."""
 
-
-    @extend_schema(
-        description="Login through Google",  request=SocialLoginSerializer,
-    )
-    def post(self, request):
-        payload = {'access_token': request.data.get("token")}  # validate the token
-        r = requests.get('https://www.googleapis.com/oauth2/v2/userinfo', params=payload)
-        data = json.loads(r.text)
-        print(data)
-        if 'error' in data:
-            content = {'message': 'wrong google token / this google token is already expired.'}
-            return Response(content)
-        # create user if not exist
         try:
-            user = User.objects.get(email=data['email'])
-        except User.DoesNotExist:
-            user = User()
-            user.email = data['email']
-            user.profile_pic = data['picture']
-            # provider random default password
-            user.password = make_password(BaseUserManager().make_random_password())
-            user.email = data['email']
-            user.save()
-        token = RefreshToken.for_user(user)  # generate token without username & password
-        response = {}
-        response['username'] = user.email
-        response['access_token'] = str(token.access_token)
-        response['refresh_token'] = str(token)
-        response['user_id'] = user.id
-        return Response(response)
+            current_profile = Profile.objects.get(user=request.user)
+        except Profile.DoesNotExist:
+            return Response({"error": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not current_profile.org:
+            return Response({"error": "User is not assigned to any organization."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get users who belong to the same org via their profiles
+        user_ids_in_same_org = Profile.objects.filter(org=current_profile.org).values_list('user_id', flat=True)
+        users = CommonUser.objects.filter(id__in=user_ids_in_same_org)
+
+        response_data = []
+
+        for user in users:
+            setting = UserGoogleLoginSetting.objects.filter(user=user).first()
+
+            if not setting:
+                setting = UserGoogleLoginSetting.objects.create(user=user, google_login_enabled=False)
+
+            response_data.append({
+                "user_id": user.id,
+                "email": user.email,
+                "google_login_enabled": setting.google_login_enabled
+            })
+
+        return Response(response_data)
+    @extend_schema(
+        request=UserGoogleLoginSettingSerializer,
+        responses={200: openapi.Response(description="Updated successfully")}
+    )
+    def put(self, request):
+        """Toggle the Google login setting for a specific user (admin only or same user)."""
+        
+        # Validate incoming data
+        serializer = UserGoogleLoginSettingSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            user_id = serializer.validated_data.get("user_id")
+            google_login_enabled = serializer.validated_data.get("google_login_enabled")
+
+            # Ensure the user exists
+            try:
+                user = CommonUser.objects.get(id=user_id)
+            except CommonUser.DoesNotExist:
+                return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            # Fetch or create the UserGoogleLoginSetting for the user
+            setting, created = UserGoogleLoginSetting.objects.get_or_create(user=user)
+
+            # Update the google_login_enabled status
+            setting.google_login_enabled = google_login_enabled
+            setting.save()
+
+            # Return a success response
+            return Response({
+                "message": "Updated successfully",
+                "user_id": user.id,
+                "google_login_enabled": setting.google_login_enabled
+            }, status=status.HTTP_200_OK)
+
+        # If the serializer is not valid, return validation errors
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
