@@ -23,6 +23,27 @@ from common.models import (
 from django.utils import timezone
 from common.utils import ROLES
 
+class CreateUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ("email", "profile_pic")
+
+    def __init__(self, *args, **kwargs):
+        self.org = kwargs.pop("org", None)
+        super().__init__(*args, **kwargs)
+        self.fields["email"].required = True
+
+    def validate_email(self, email):
+        if self.instance:
+            if self.instance.email != email:
+                if not Profile.objects.filter(user__email=email, org=self.org).exists():
+                    return email
+                raise serializers.ValidationError("Email already exists")
+            return email
+        if not Profile.objects.filter(user__email=email.lower(), org=self.org).exists():
+            return email
+        raise serializers.ValidationError("Given Email id already exists")
+    
 # NEW CHANGES: Signup Serializer
 class SignupSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)

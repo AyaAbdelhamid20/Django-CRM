@@ -55,7 +55,11 @@ def send_email_to_new_user(user_id):
             to=recipients,
         )
         msg.content_subtype = "html"
-        msg.send()
+        try:
+            msg.send()
+            print("Mail başarıyla gönderildi.")
+        except Exception as e:
+            print("Mail gönderilemedi:", str(e))
 
 
 @app.task

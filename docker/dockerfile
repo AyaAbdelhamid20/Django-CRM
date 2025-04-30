@@ -22,11 +22,11 @@ RUN python3 -m pip install --no-cache-dir -r requirements.txt
 RUN python3 -m pip install --no-cache-dir redis
 
 COPY . /app
-COPY ./docker/entrypoint.sh /app/entrypoint.sh
-COPY docker/wait-for-postgres.sh /app
+# COPY ./docker/entrypoint.sh /app/entrypoint.sh
+# COPY docker/wait-for-postgres.sh /app
 
-#RUN dos2unix docker/entrypoint.sh
-#RUN dos2unix docker/wait-for-postgres.sh
-RUN chmod +x /app/entrypoint.sh
-RUN chmod +x wait-for-postgres.sh
-ENTRYPOINT ["./entrypoint.sh"]
+# RUN dos2unix docker/entrypoint.sh
+# RUN dos2unix docker/wait-for-postgres.sh
+RUN chmod +x docker/entrypoint.sh
+RUN chmod +x docker/wait-for-postgres.sh
+ENTRYPOINT ["docker/entrypoint.sh"]

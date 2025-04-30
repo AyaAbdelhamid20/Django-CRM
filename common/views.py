@@ -65,7 +65,8 @@ from opportunity.serializer import OpportunitySerializer
 from teams.models import Teams
 from teams.serializer import TeamsSerializer
 # NEW CHANGES: added imports
-from django.contrib.auth.models import User
+#from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny#, IsAuthenticated
 from django.core.mail import send_mail
@@ -84,6 +85,51 @@ REST_FRAMEWORK = {
 def generate_tokens(user):
     refresh = RefreshToken.for_user(user)
     return {'refresh': str(refresh), 'access': str(refresh.access_token)}
+
+# NEW FEATURE: Invite user with email
+class InviteUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.profile.role != "ADMIN" and not request.user.is_superuser:
+            return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = UserInviteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        email = serializer.validated_data["email"]
+        role = serializer.validated_data["role"]
+        has_sales_access = serializer.validated_data["has_sales_access"]
+        has_marketing_access = serializer.validated_data["has_marketing_access"]
+
+        if User.objects.filter(email=email).exists():
+            return Response({"error": "A user with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Yeni kullanıcıyı oluştur
+        user = User.objects.create(
+            email=email,
+            is_active=False,
+        )
+
+        # Profil oluştur
+        Profile.objects.create(
+            user=user,
+            org=request.profile.org,
+            role=role,
+            has_sales_access=has_sales_access,
+            has_marketing_access=has_marketing_access,
+            is_active=False,
+            date_of_joining=timezone.now(),
+        )
+
+        # Davet e-postasını gönder
+        send_email_to_new_user.delay(str(user.id))
+
+        return Response(
+            {"message": "Invitation sent successfully."},
+            status=status.HTTP_201_CREATED
+        )
 
 # NEW: Signup API
 class SignupView(APIView):
@@ -230,73 +276,21 @@ class GetTeamsAndUsersView(APIView):
         data["profiles"] = profiles_data
         return Response(data)
 
-
+# guncelleme yapildi.
 class UsersListView(APIView, LimitOffsetPagination):
-
     permission_classes = (IsAuthenticated,)
-    @extend_schema(parameters=swagger_params1.organization_params,request=UserCreateSwaggerSerializer)
-    def post(self, request, format=None):
-        print(request.profile.role, request.user.is_superuser)
-        if self.request.profile.role != "ADMIN" and not self.request.user.is_superuser:
-            return Response(
-                {"error": True, "errors": "Permission Denied"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        else:
-            params = request.data
-            if params:
-                user_serializer = CreateUserSerializer(data=params, org=request.profile.org)
-                address_serializer = BillingAddressSerializer(data=params)
-                profile_serializer = CreateProfileSerializer(data=params)
-                data = {}
-                if not user_serializer.is_valid():
-                    data["user_errors"] = dict(user_serializer.errors)
-                if not profile_serializer.is_valid():
-                    data["profile_errors"] = profile_serializer.errors
-                if not address_serializer.is_valid():
-                    data["address_errors"] = (address_serializer.errors,)
-                if data:
-                    return Response(
-                        {"error": True, "errors": data},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if address_serializer.is_valid():
-                    address_obj = address_serializer.save()
-                    user = user_serializer.save(
-                        is_active=True,
-                    )
-                    user.email = user.email
-                    user.save()
-                    # if params.get("password"):
-                    #     user.set_password(params.get("password"))
-                    #     user.save()
-                    profile = Profile.objects.create(
-                        user=user,
-                        date_of_joining=timezone.now(),
-                        role=params.get("role"),
-                        address=address_obj,
-                        org=request.profile.org,
-                    )
-
-                    # send_email_to_new_user.delay(
-                    #     profile.id,
-                    #     request.profile.org.id,
-                    # )
-                    return Response(
-                        {"error": False, "message": "User Created Successfully"},
-                        status=status.HTTP_201_CREATED,
-                    )
-
 
     @extend_schema(parameters=swagger_params1.user_list_params)
     def get(self, request, format=None):
-        if self.request.profile.role != "ADMIN" and not self.request.user.is_superuser:
+        if request.profile.role != "ADMIN" and not request.user.is_superuser:
             return Response(
                 {"error": True, "errors": "Permission Denied"},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
         queryset = Profile.objects.filter(org=request.profile.org).order_by("-id")
         params = request.query_params
+
         if params:
             if params.get("email"):
                 queryset = queryset.filter(user__email__icontains=params.get("email"))
@@ -306,49 +300,59 @@ class UsersListView(APIView, LimitOffsetPagination):
                 queryset = queryset.filter(is_active=params.get("status"))
 
         context = {}
+
+        # Aktif kullanıcılar
         queryset_active_users = queryset.filter(is_active=True)
         results_active_users = self.paginate_queryset(
             queryset_active_users.distinct(), self.request, view=self
         )
         active_users = ProfileSerializer(results_active_users, many=True).data
-        if results_active_users:
-            offset = queryset_active_users.filter(
-                id__gte=results_active_users[-1].id
-            ).count()
-            if offset == queryset_active_users.count():
-                offset = None
-        else:
-            offset = 0
+        offset = (
+            queryset_active_users.filter(id__gte=results_active_users[-1].id).count()
+            if results_active_users else 0
+        )
         context["active_users"] = {
             "active_users_count": self.count,
             "active_users": active_users,
-            "offset": offset,
+            "offset": offset if offset != queryset_active_users.count() else None,
         }
 
+        # Pasif kullanıcılar
         queryset_inactive_users = queryset.filter(is_active=False)
         results_inactive_users = self.paginate_queryset(
             queryset_inactive_users.distinct(), self.request, view=self
         )
         inactive_users = ProfileSerializer(results_inactive_users, many=True).data
-        if results_inactive_users:
-            offset = queryset_inactive_users.filter(
-                id__gte=results_inactive_users[-1].id
-            ).count()
-            if offset == queryset_inactive_users.count():
-                offset = None
-        else:
-            offset = 0
+        offset = (
+            queryset_inactive_users.filter(id__gte=results_inactive_users[-1].id).count()
+            if results_inactive_users else 0
+        )
         context["inactive_users"] = {
             "inactive_users_count": self.count,
             "inactive_users": inactive_users,
-            "offset": offset,
+            "offset": offset if offset != queryset_inactive_users.count() else None,
         }
 
         context["admin_email"] = settings.ADMIN_EMAIL
         context["roles"] = ROLES
         context["status"] = [("True", "Active"), ("False", "In Active")]
         return Response(context)
+    
+#yeni eklendi
+class ActivateUserView(APIView):
+    def get(self, request, uidb64, token, activation_key):
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response({"error": "Invalid link"}, status=400)
 
+        if user and account_activation_token.check_token(user, token):
+            user.is_active = True
+            user.activation_key = ""
+            user.save()
+            return Response({"message": "Your account has been activated. Please set your password."})
+        return Response({"error": "Invalid or expired activation link."}, status=400)
 
 class UserDetailView(APIView):
     permission_classes = (IsAuthenticated,)
